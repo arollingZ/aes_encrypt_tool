@@ -42,9 +42,15 @@ const INVS_BOX:[u8;256]=[
 
 mod aes_io{
     use crate::NB;
+    use crate::NR;
     use crate::BPOLY;
     use crate::S_BOX;
     use crate::INVS_BOX;
+    
+    pub fn aes_size(insize:usize)->usize{
+        let outsize:usize = ((insize + 0x0f)/0x10)*16;
+        outsize
+    }
 
     //done，将4字节的数组循环左移，0123->1230
     pub fn rotationword(indata:&mut Vec<u8>){
@@ -91,11 +97,11 @@ mod aes_io{
         out_num
     }
 
-    pub fn add_round_key(indata:&mut Vec<u8>,inkey:&Vec<u8>){
+    fn add_round_key(indata:&mut Vec<u8>,inkey:&Vec<u8>){
         xorbytes(indata,&inkey,4*NB);
     }
 
-    pub fn shiftrows(indata:&mut Vec<u8>,invert:bool){
+    fn shiftrows(indata:&mut Vec<u8>,invert:bool){
         let mut temp:usize;
 
         for r in 1..4{
@@ -114,7 +120,7 @@ mod aes_io{
         }
     }
 
-    pub fn mix_columns(indata:&mut Vec<u8>,invert:bool){
+    fn mix_columns(indata:&mut Vec<u8>,invert:bool){
         for i in 0..4{
             let mut result:Vec<u8> = Vec::new();
             let temp:u8 = indata[4*i] ^ indata[4*i+1] ^ indata[4*i+2] ^ indata[4*i+3];
@@ -139,48 +145,50 @@ mod aes_io{
             }
         }
     }
+
+    pub fn block_decrypt(indata:&mut Vec<u8>,key:&Vec<u8>){
+        let mut round_key_temp:Vec<u8> = Vec::new();
+        for round_key_temp_i in 0..16{
+            round_key_temp.push(key[4*NB*NR + round_key_temp_i]);
+        }
+        add_round_key(indata,&round_key_temp);
+        for i in 0..NR{
+            let mut round_key_tool:Vec<u8> = Vec::new();
+            for round_key_temp_j in 0..16{
+                round_key_tool.push(key[4*NB*(NR-1-i)+round_key_temp_j]);
+            }
+            shiftrows(indata,true);
+            subbytes(indata,4*NB,true);
+            add_round_key(indata,&round_key_tool);
+            if i != (NR-1){
+                mix_columns(indata,true);
+            }
+        }
+    }
+
+    pub fn block_encrypt(indata:&mut Vec<u8>,key:&Vec<u8>){
+        let mut round_key_temp:Vec<u8> = Vec::new();
+        for round_key_temp_i in 0..16{
+            round_key_temp.push(key[round_key_temp_i]);
+        }
+        add_round_key(indata,&round_key_temp);
+        for i in 1..NR+1{
+            subbytes(indata,4*NB,false);
+            shiftrows(indata,false);
+    
+            if i != NR{
+                mix_columns(indata,false);
+            }
+            let mut round_key_tool:Vec<u8> = Vec::new();
+            for round_key_temp_j in 0..16{
+                round_key_tool.push(key[4*NB*i+round_key_temp_j]);
+            }
+            add_round_key(indata,&round_key_tool);
+        }
+    }
+
 }
 
-pub fn block_decrypt(indata:&mut Vec<u8>,key:&Vec<u8>){
-    let mut round_key_temp:Vec<u8> = Vec::new();
-    for round_key_temp_i in 0..16{
-        round_key_temp.push(key[4*NB*NR + round_key_temp_i]);
-    }
-    aes_io::add_round_key(indata,&round_key_temp);
-    for i in 0..NR{
-        let mut round_key_tool:Vec<u8> = Vec::new();
-        for round_key_temp_j in 0..16{
-            round_key_tool.push(key[4*NB*(NR-1-i)+round_key_temp_j]);
-        }
-        aes_io::shiftrows(indata,true);
-        aes_io::subbytes(indata,4*NB,true);
-        aes_io::add_round_key(indata,&round_key_tool);
-        if i != (NR-1){
-            aes_io::mix_columns(indata,true);
-        }
-    }
-}
-
-pub fn block_encrypt(indata:&mut Vec<u8>,key:&Vec<u8>){
-    let mut round_key_temp:Vec<u8> = Vec::new();
-    for round_key_temp_i in 0..16{
-        round_key_temp.push(key[round_key_temp_i]);
-    }
-    aes_io::add_round_key(indata,&round_key_temp);
-    for i in 1..NR+1{
-        aes_io::subbytes(indata,4*NB,false);
-        aes_io::shiftrows(indata,false);
-
-        if i != NR{
-            aes_io::mix_columns(indata,false);
-        }
-        let mut round_key_tool:Vec<u8> = Vec::new();
-        for round_key_temp_j in 0..16{
-            round_key_tool.push(key[4*NB*i+round_key_temp_j]);
-        }
-        aes_io::add_round_key(indata,&round_key_tool);
-    }
-}
 
 pub fn aes_key_init(in_key:&mut Vec<u8>){
     let mut rcon:[u8;4] = [0x01,0x00,0x00,0x00];
@@ -210,4 +218,46 @@ pub fn aes_key_init(in_key:&mut Vec<u8>){
         }
     }
     //println!("aes_key_whole:{:?}",in_key);
+}
+
+pub fn aes_encrypt(indata:&mut Vec<u8>,aes_key:&Vec<u8>)->Vec<u8>{
+    let mut out_data:Vec<u8> = Vec::new();
+
+    //对原始数据进行16字节对齐，补0xff
+    for _lychee_len in indata.len()..aes_io::aes_size(indata.len()){
+        indata.push(0xff);
+    }
+
+    for block_i in 0..indata.len()/16{
+        let mut block_temp:Vec<u8> = Vec::new();
+        for block_temp_i in 0..16{
+            block_temp.push(indata[16*block_i + block_temp_i]);
+        }
+        aes_io::block_encrypt(&mut block_temp,aes_key);
+        for encrypt_i in 0..16{
+            out_data.push(block_temp[encrypt_i]);
+        }
+    }
+    out_data
+}
+
+pub fn aes_decrypt(indata:&mut Vec<u8>,aes_key:&Vec<u8>)->Vec<u8>{
+    let mut out_data:Vec<u8> = Vec::new();
+
+    //对原始数据进行16字节对齐，补0x00
+    for _lychee_len in indata.len()..aes_io::aes_size(indata.len()){
+        indata.push(0);
+    }
+    //此时加密数据长度都是16的整数倍，然后对数据包进行分块处理，每个数据块16字节
+    for block_i in 0..indata.len()/16{
+        let mut block_temp:Vec<u8> = Vec::new();
+        for temp_i in 0..16{
+            block_temp.push(indata[16*block_i + temp_i]);
+        }
+        aes_io::block_decrypt(&mut block_temp,aes_key);
+        for decrypt_i in 0..16{
+            out_data.push(block_temp[decrypt_i]);
+        }
+    }
+    out_data
 }
